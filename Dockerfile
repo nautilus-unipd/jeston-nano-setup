@@ -27,8 +27,10 @@ ENV HOME=/home/ubuntu
 # Set up .bashrc for ubuntu
 RUN echo "cd \$HOME" >> /home/ubuntu/.bashrc && \
     echo "source /opt/ros/jazzy/local_setup.bash" >> /home/ubuntu/.bashrc && \
-    export DISPLAY=:0 \
     chown ubuntu:ubuntu /home/ubuntu/.bashrc
+
+# Set up default display
+ENV DISPLAY=:0
 
 # Switch to the ubuntu user
 USER ubuntu
