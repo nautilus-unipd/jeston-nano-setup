@@ -72,7 +72,7 @@ Without this edit, if you access the Jetson only via VNC (without a physical dis
 
 ## 4. Install Docker Engine
 
-Install Docker on Debian following the official steps:
+Install Docker on Debian following the [official steps](https://docs.docker.com/engine/install/ubuntu/):
 
 ### Uninstall conflicting packages
 ```bash
