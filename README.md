@@ -129,6 +129,9 @@ then run the script `./run_container.sh`, which will take you into the Ubuntu co
 Once inside, to launch the server, simply run the command `python3 webServerArUcoMarker.py`.
 To stop the server, use `Ctrl+C`
 
+The client (`webClientArUcoMarker.py`) should be used on any device connected to the same network 
+as the Jetson (for example, a PC connected to the Jetson via Wi-Fi).
+
 ---
 
 ## 6. Connecting to the Jetson Nano
