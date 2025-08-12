@@ -123,7 +123,6 @@ sudo docker run -it --privileged \
 ```
 
 Inside, Ubuntu 24.04 and ROS 2 Jazzy are ready.
-
 To start the container with the server, it's enough to clone the repository using `git clone`,
 then run the script `./run_container.sh`, which will take you into the Ubuntu container. 
 Once inside, to launch the server, simply run the command `python3 webServerArUcoMarker.py`.
