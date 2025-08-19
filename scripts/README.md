@@ -15,4 +15,5 @@ In the `Config` class, it may be necessary to modify the following parameters:
 - `SQUARE_SIZE`: It is very important to provide an accurate value representing the size (in cm) of each square on the chessboard.
 - `DEFAULT_SERVER_IP`: This is the IP address of the Jetson device, used to upload the .pkl file.
 - `JETSON_PATH`: The path on the Jetson where the file will be saved.
+
 It is also possible to modify `MIN_CALIBRATION_IMAGES` to specify the desired number of images to be acquired for calibration
