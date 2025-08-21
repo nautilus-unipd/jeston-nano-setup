@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """
 Web Service per Rilevamento Distanza April Tag con Telecamera Stereo
-Versione: Web Service 1.0 - Fixed per compatibilità OpenCV (Senza Flask)
+Versione: Web Service 1.1 - Fixed Z coordinate to match stereo depth
 
 Requisiti:
 pip install opencv-python numpy
@@ -85,6 +85,30 @@ def split_stereo_frame(frame, config=Config):
         frame_r = frame[:, config.CAMERA_LEFT_WIDTH:config.CAMERA_LEFT_WIDTH + config.CAMERA_RIGHT_WIDTH]
     
     return frame_l, frame_r
+
+def rotation_matrix_to_euler_angles(R):
+    """
+    Converte matrice di rotazione in angoli di Eulero (roll, pitch, yaw) in gradi
+    """
+    # Calcola gli angoli di Eulero dalla matrice di rotazione
+    sy = np.sqrt(R[0,0] * R[0,0] + R[1,0] * R[1,0])
+    singular = sy < 1e-6
+    
+    if not singular:
+        x = np.arctan2(R[2,1], R[2,2])  # roll
+        y = np.arctan2(-R[2,0], sy)     # pitch
+        z = np.arctan2(R[1,0], R[0,0])  # yaw
+    else:
+        x = np.arctan2(-R[1,2], R[1,1]) # roll
+        y = np.arctan2(-R[2,0], sy)     # pitch
+        z = 0                           # yaw
+    
+    # Converti in gradi
+    roll = np.degrees(x)
+    pitch = np.degrees(y)
+    yaw = np.degrees(z)
+    
+    return roll, pitch, yaw
 
 # =============================================================================
 # CALIBRATORE STEREO
@@ -188,6 +212,8 @@ class AprilTagDistanceDetector:
         
         # Filtri per smoothing
         self.distance_filters = {}
+        self.position_filters = {}
+        self.orientation_filters = {}
         
         # Variabili per il threading
         self.cap = None
@@ -216,22 +242,118 @@ class AprilTagDistanceDetector:
         
         return corners, ids, rejected
     
-    def get_smoothed_distance(self, tag_id, distance):
+    def estimate_pose_single_marker(self, corners, camera_matrix, dist_coeffs, stereo_depth_cm):
         """
-        Applica filtro passa-basso per smooth delle misurazioni
+        Calcola la pose di un singolo marcatore con Z fissata alla profondità stereo
         """
+        # Dimensione reale del marcatore in metri
+        marker_size = self.config.TAG_SIZE_REAL / 100.0  # converti cm in metri
+        
+        # Punti 3D del marcatore (nel sistema di coordinate del marcatore)
+        object_points = np.array([
+            [-marker_size/2, marker_size/2, 0],
+            [marker_size/2, marker_size/2, 0],
+            [marker_size/2, -marker_size/2, 0],
+            [-marker_size/2, -marker_size/2, 0]
+        ], dtype=np.float32)
+        
+        # Usa solvePnP per calcolare pose
+        success, rvec, tvec = cv2.solvePnP(
+            object_points,
+            corners[0],
+            camera_matrix,
+            dist_coeffs
+        )
+        
+        if success:
+            # Converti vettore di rotazione in matrice di rotazione
+            rotation_matrix, _ = cv2.Rodrigues(rvec)
+            
+            # Calcola angoli di Eulero
+            roll, pitch, yaw = rotation_matrix_to_euler_angles(rotation_matrix)
+            
+            # Converti posizione da metri a centimetri
+            position_cm = tvec.flatten() * 100.0
+            
+            # CORREZIONE PRINCIPALE: Sostituisci Z con la profondità stereo
+            corrected_position_cm = position_cm.copy()
+
+            # correzione delle coordinate x,y,z
+            scale_factor = stereo_depth_cm / position_cm[2]  # quanto è cambiata la profondità
+            corrected_position_cm[0] = position_cm[0] * scale_factor  # X
+            corrected_position_cm[1] = position_cm[1] * scale_factor  # Y
+            corrected_position_cm[2] = stereo_depth_cm               # Z
+
+            
+            return {
+                'success': True,
+                'position': {
+                    'x': float(corrected_position_cm[0]),
+                    'y': float(corrected_position_cm[1]),
+                    'z': float(corrected_position_cm[2])  # Ora corrisponde alla profondità stereo
+                },
+                'position_original_solvepnp': {
+                    'x': float(position_cm[0]),
+                    'y': float(position_cm[1]),
+                    'z': float(position_cm[2])  # Z originale da solvePnP per confronto
+                },
+                'orientation': {
+                    'roll': float(roll),
+                    'pitch': float(pitch),
+                    'yaw': float(yaw)
+                },
+                'rotation_vector': rvec.flatten().tolist(),
+                'translation_vector': tvec.flatten().tolist(),
+                'rotation_matrix': rotation_matrix.tolist(),
+                'stereo_depth_used': float(stereo_depth_cm)
+            }
+        else:
+            return {'success': False}
+    
+    def get_smoothed_values(self, tag_id, distance, position, orientation):
+        """
+        Applica filtri passa-basso per smooth delle misurazioni
+        """
+        # Filtro distanza
         if tag_id not in self.distance_filters:
             self.distance_filters[tag_id] = []
-        
         self.distance_filters[tag_id].append(distance)
-        
         if len(self.distance_filters[tag_id]) > 5:
             self.distance_filters[tag_id].pop(0)
         
-        weights = np.linspace(0.5, 1.0, len(self.distance_filters[tag_id]))
-        weighted_avg = np.average(self.distance_filters[tag_id], weights=weights)
+        # Filtro posizione
+        if tag_id not in self.position_filters:
+            self.position_filters[tag_id] = {'x': [], 'y': [], 'z': []}
+        for axis in ['x', 'y', 'z']:
+            self.position_filters[tag_id][axis].append(position[axis])
+            if len(self.position_filters[tag_id][axis]) > 5:
+                self.position_filters[tag_id][axis].pop(0)
         
-        return weighted_avg
+        # Filtro orientamento
+        if tag_id not in self.orientation_filters:
+            self.orientation_filters[tag_id] = {'roll': [], 'pitch': [], 'yaw': []}
+        for angle in ['roll', 'pitch', 'yaw']:
+            self.orientation_filters[tag_id][angle].append(orientation[angle])
+            if len(self.orientation_filters[tag_id][angle]) > 5:
+                self.orientation_filters[tag_id][angle].pop(0)
+        
+        # Calcola medie ponderate
+        weights = np.linspace(0.5, 1.0, len(self.distance_filters[tag_id]))
+        
+        smoothed_distance = np.average(self.distance_filters[tag_id], weights=weights)
+        
+        smoothed_position = {}
+        smoothed_orientation = {}
+        
+        for axis in ['x', 'y', 'z']:
+            pos_weights = np.linspace(0.5, 1.0, len(self.position_filters[tag_id][axis]))
+            smoothed_position[axis] = np.average(self.position_filters[tag_id][axis], weights=pos_weights)
+        
+        for angle in ['roll', 'pitch', 'yaw']:
+            angle_weights = np.linspace(0.5, 1.0, len(self.orientation_filters[tag_id][angle]))
+            smoothed_orientation[angle] = np.average(self.orientation_filters[tag_id][angle], weights=angle_weights)
+        
+        return smoothed_distance, smoothed_position, smoothed_orientation
     
     def connect_camera(self):
         """Connessione alla telecamera"""
@@ -340,21 +462,60 @@ class AprilTagDistanceDetector:
                             focal_length = self.calibrator.P1[0, 0]
                             baseline = self.calibrator.calibration_quality['baseline']
                             
-                            # Calcola distanza
+                            # Calcola distanza stereo
                             distance_raw = (focal_length * baseline) / disparity
-                            distance_smooth = self.get_smoothed_distance(tag_id, distance_raw)
                             
-                            detection_results[int(tag_id)] = {
-                                'id': int(tag_id),
-                                'distance_raw': float(distance_raw),
-                                'distance_smooth': float(distance_smooth),
-                                'disparity': float(disparity),
-                                'center_left': [float(center_l[0]), float(center_l[1])],
-                                'center_right': [float(center_r[0]), float(center_r[1])],
-                                'corners_left': corners_l_tag.tolist(),
-                                'corners_right': corners_r_tag.tolist(),
-                                'timestamp': time.time()
-                            }
+                            # Calcola pose del marcatore usando la camera sinistra
+                            # PASSA LA DISTANZA STEREO COME PARAMETRO
+                            pose_result = self.estimate_pose_single_marker(
+                                [corners_l_tag],
+                                self.calibrator.camera_matrix_l,
+                                self.calibrator.dist_coeffs_l,
+                                distance_raw  # Passa la profondità stereo
+                            )
+                            
+                            if pose_result['success']:
+                                # Applica filtri per smoothing
+                                distance_smooth, position_smooth, orientation_smooth = self.get_smoothed_values(
+                                    tag_id, distance_raw, pose_result['position'], pose_result['orientation']
+                                )
+                                
+                                detection_results[int(tag_id)] = {
+                                    'id': int(tag_id),
+                                    'distance_raw': float(distance_raw),
+                                    'distance_smooth': float(distance_smooth),
+                                    'disparity': float(disparity),
+                                    'center_left': [float(center_l[0]), float(center_l[1])],
+                                    'center_right': [float(center_r[0]), float(center_r[1])],
+                                    'corners_left': corners_l_tag.tolist(),
+                                    'corners_right': corners_r_tag.tolist(),
+                                    'position_3d': {
+                                        'x': float(pose_result['position']['x']),
+                                        'y': float(pose_result['position']['y']),
+                                        'z': float(pose_result['position']['z'])  # Ora è = distance_raw
+                                    },
+                                    'position_3d_smooth': {
+                                        'x': float(position_smooth['x']),
+                                        'y': float(position_smooth['y']),
+                                        'z': float(position_smooth['z'])  # Ora è = distance_smooth
+                                    },
+                                    'position_3d_original_solvepnp': pose_result.get('position_original_solvepnp', {}),
+                                    'orientation': {
+                                        'roll': float(pose_result['orientation']['roll']),
+                                        'pitch': float(pose_result['orientation']['pitch']),
+                                        'yaw': float(pose_result['orientation']['yaw'])
+                                    },
+                                    'orientation_smooth': {
+                                        'roll': float(orientation_smooth['roll']),
+                                        'pitch': float(orientation_smooth['pitch']),
+                                        'yaw': float(orientation_smooth['yaw'])
+                                    },
+                                    'rotation_vector': pose_result['rotation_vector'],
+                                    'translation_vector': pose_result['translation_vector'],
+                                    'rotation_matrix': pose_result['rotation_matrix'],
+                                    'stereo_depth_confirmation': float(distance_raw),
+                                    'timestamp': time.time()
+                                }
                 
                 # Aggiorna dati di rilevamento
                 with self.data_lock:
@@ -365,13 +526,19 @@ class AprilTagDistanceDetector:
                         'calibration_info': {
                             'rms_error': float(self.calibrator.calibration_quality.get('stereo_rms', 0)),
                             'baseline': float(self.calibrator.calibration_quality.get('baseline', 0))
-                        }
+                        },
+                        'note': 'Z coordinate now matches stereo depth exactly'
                     }
                 
-                # Log periodico
+                # Log periodico con conferma della correzione
                 if frame_count % 30 == 0 and detection_results:
                     for tag_id, data in detection_results.items():
-                        logger.info(f"Tag {tag_id}: {data['distance_smooth']:.1f}cm")
+                        pos = data['position_3d_smooth']
+                        ori = data['orientation_smooth']
+                        distance = data['distance_smooth']
+                        logger.info(f"Tag {tag_id}: Dist={distance:.1f}cm, "
+                                  f"Pos({pos['x']:.1f}, {pos['y']:.1f}, {pos['z']:.1f})cm (Z=depth), "
+                                  f"Ori({ori['roll']:.1f}, {ori['pitch']:.1f}, {ori['yaw']:.1f})°")
                 
             except Exception as e:
                 logger.error(f"Errore nel loop di rilevamento: {e}")
@@ -501,7 +668,9 @@ class WebServiceHandler(BaseHTTPRequestHandler):
         """Handler per reset filtri"""
         try:
             detector.distance_filters.clear()
-            logger.info("Filtri distanza resettati")
+            detector.position_filters.clear()
+            detector.orientation_filters.clear()
+            logger.info("Tutti i filtri resettati")
             
             response_data = {
                 'status': 'filters_reset',
@@ -586,4 +755,3 @@ def main():
 
 if __name__ == "__main__":
     main()
-

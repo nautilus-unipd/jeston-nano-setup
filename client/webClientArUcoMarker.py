@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """
 Client per visualizzazione Web Service April Tag Distance Detection
-Versione: Client 1.0
+Versione: Client 1.1 - Enhanced con Posizione 3D e Orientamento
 
 Requisiti:
 pip install opencv-python numpy requests
@@ -15,6 +15,11 @@ Comandi durante la visualizzazione:
 - S: Screenshot
 - D: Toggle debug info
 - F: Toggle fullscreen
+- P: Toggle posizione 3D
+- O: Toggle orientamento
+- 1: Vista standard
+- 2: Vista dettagliata posizione
+- 3: Vista dettagliata orientamento
 """
 
 import cv2
@@ -45,12 +50,15 @@ class ClientConfig:
     COLOR_TEXT_DISTANCE = (0, 255, 255) # Giallo per la distanza
     COLOR_TEXT_INFO = (255, 255, 255)   # Bianco per info generali
     COLOR_TEXT_DEBUG = (128, 128, 255)  # Azzurro per debug
+    COLOR_TEXT_POSITION = (255, 128, 0) # Arancione per posizione 3D
+    COLOR_TEXT_ORIENTATION = (128, 255, 128) # Verde chiaro per orientamento
     COLOR_SEPARATOR = (255, 255, 255)   # Bianco per separatore
     
     # Parametri testo
     FONT_SCALE_DISTANCE = 0.8
     FONT_SCALE_INFO = 0.6
     FONT_SCALE_DEBUG = 0.5
+    FONT_SCALE_DETAIL = 0.4
     FONT_THICKNESS = 2
 
 # =============================================================================
@@ -74,7 +82,10 @@ class AprilTagClient:
         
         # Parametri visualizzazione
         self.show_debug = False
+        self.show_position_3d = True
+        self.show_orientation = True
         self.fullscreen = False
+        self.view_mode = 1  # 1=standard, 2=dettaglio posizione, 3=dettaglio orientamento
         
         # Statistiche
         self.stats = {
@@ -184,15 +195,16 @@ class AprilTagClient:
             self.logger.error(f"Errore reset filtri: {e}")
         return False
     
-    def draw_marker_info(self, frame, tag_data):
+    def draw_marker_info_standard(self, frame, tag_data):
         """
-        Disegna informazioni del marcatore sul frame
+        Disegna informazioni del marcatore sul frame - Vista Standard
         """
         tag_id = tag_data['id']
         distance = tag_data['distance_smooth']
-        distance_raw = tag_data['distance_raw']
         corners_left = np.array(tag_data['corners_left'], dtype=np.float32)
         center_left = tag_data['center_left']
+        position_3d = tag_data.get('position_3d_smooth', tag_data.get('position_3d', {}))
+        orientation = tag_data.get('orientation_smooth', tag_data.get('orientation', {}))
         
         # Disegna riquadro del marcatore
         corners_int = corners_left.astype(int)
@@ -202,38 +214,176 @@ class AprilTagClient:
         center_int = (int(center_left[0]), int(center_left[1]))
         cv2.circle(frame, center_int, 5, ClientConfig.COLOR_MARKER_CENTER, -1)
         
-        # Disegna ID e distanza principale
-        text_distance = f"ID {tag_id}: {distance:.1f}cm"
-        text_size = cv2.getTextSize(text_distance, cv2.FONT_HERSHEY_SIMPLEX, 
-                                   ClientConfig.FONT_SCALE_DISTANCE, ClientConfig.FONT_THICKNESS)[0]
+        # Informazioni da visualizzare
+        info_lines = [f"ID {tag_id}: {distance:.1f}cm"]
+        
+        if self.show_position_3d and position_3d:
+            info_lines.append(f"XYZ: ({position_3d.get('x', 0):.1f}cm, {position_3d.get('y', 0):.1f}cm, {position_3d.get('z', 0):.1f}cm)")
+        
+        if self.show_orientation and orientation:
+            info_lines.append(f"RPY: ({orientation.get('roll', 0):.1f}deg, {orientation.get('pitch', 0):.1f}deg, {orientation.get('yaw', 0):.1f}deg)")
+        
+        # Calcola dimensioni del box di testo
+        max_width = 0
+        total_height = 0
+        line_heights = []
+        
+        for line in info_lines:
+            text_size = cv2.getTextSize(line, cv2.FONT_HERSHEY_SIMPLEX, 
+                                       ClientConfig.FONT_SCALE_INFO, 1)[0]
+            max_width = max(max_width, text_size[0])
+            line_heights.append(text_size[1])
+            total_height += text_size[1] + 5
         
         # Posiziona testo sopra il marcatore
-        text_x = max(10, center_int[0] - text_size[0] // 2)
-        text_y = max(30, center_int[1] - 20)
+        text_x = max(10, center_int[0] - max_width // 2)
+        text_y = max(total_height + 10, center_int[1] - 30)
         
         # Sfondo per il testo
         cv2.rectangle(frame, 
-                     (text_x - 5, text_y - text_size[1] - 5),
-                     (text_x + text_size[0] + 5, text_y + 5),
-                     (0, 0, 0), -1)
+                     (text_x - 5, text_y - total_height - 5),
+                     (text_x + max_width + 10, text_y + 5),
+                     (0, 0, 0, 180), -1)
         
-        cv2.putText(frame, text_distance, (text_x, text_y), 
-                   cv2.FONT_HERSHEY_SIMPLEX, ClientConfig.FONT_SCALE_DISTANCE,
-                   ClientConfig.COLOR_TEXT_DISTANCE, ClientConfig.FONT_THICKNESS)
+        # Disegna le linee di testo
+        current_y = text_y - total_height + line_heights[0]
         
-        # Informazioni aggiuntive se debug è attivo
-        if self.show_debug:
-            debug_info = [
-                f"Raw: {distance_raw:.1f}cm",
-                f"Disp: {tag_data['disparity']:.1f}px",
-                f"Center: ({center_left[0]:.0f}, {center_left[1]:.0f})"
-            ]
+        for i, line in enumerate(info_lines):
+            if i == 0:  # Distanza
+                color = ClientConfig.COLOR_TEXT_DISTANCE
+            elif "XYZ" in line:  # Posizione 3D
+                color = ClientConfig.COLOR_TEXT_POSITION
+            elif "RPY" in line:  # Orientamento
+                color = ClientConfig.COLOR_TEXT_ORIENTATION
+            else:
+                color = ClientConfig.COLOR_TEXT_INFO
             
-            for i, info in enumerate(debug_info):
-                debug_y = text_y + 25 + (i * 20)
-                cv2.putText(frame, info, (text_x, debug_y), 
-                           cv2.FONT_HERSHEY_SIMPLEX, ClientConfig.FONT_SCALE_DEBUG,
-                           ClientConfig.COLOR_TEXT_DEBUG, 1)
+            cv2.putText(frame, line, (text_x, current_y), 
+                       cv2.FONT_HERSHEY_SIMPLEX, ClientConfig.FONT_SCALE_INFO,
+                       color, 1)
+            
+            current_y += line_heights[i] + 5
+    
+    def draw_marker_info_position_detail(self, frame, tag_data):
+        """
+        Disegna informazioni dettagliate di posizione - Vista Posizione
+        """
+        tag_id = tag_data['id']
+        corners_left = np.array(tag_data['corners_left'], dtype=np.float32)
+        center_left = tag_data['center_left']
+        position_3d = tag_data.get('position_3d_smooth', tag_data.get('position_3d', {}))
+        position_3d_raw = tag_data.get('position_3d', {})
+        
+        # Disegna riquadro del marcatore
+        corners_int = corners_left.astype(int)
+        cv2.polylines(frame, [corners_int], True, ClientConfig.COLOR_MARKER_BOX, 2)
+        cv2.circle(frame, (int(center_left[0]), int(center_left[1])), 3, ClientConfig.COLOR_MARKER_CENTER, -1)
+        
+        # Informazioni dettagliate posizione
+        info_lines = [
+            f"TAG ID {tag_id} - POSIZIONE 3D",
+            f"X: {position_3d.get('x', 0):.2f}cm (raw: {position_3d_raw.get('x', 0):.2f})",
+            f"Y: {position_3d.get('y', 0):.2f}cm (raw: {position_3d_raw.get('y', 0):.2f})",
+            f"Z: {position_3d.get('z', 0):.2f}cm (raw: {position_3d_raw.get('z', 0):.2f})",
+            f"Distanza: {tag_data['distance_smooth']:.2f}cm"
+        ]
+        
+        # Posiziona il box informazioni in alto a sinistra del marcatore
+        text_x = max(10, int(center_left[0]) - 200)
+        text_y = max(120, int(center_left[1]) - 50)
+        
+        # Calcola dimensioni box
+        max_width = 0
+        total_height = len(info_lines) * 20 + 10
+        
+        for line in info_lines:
+            text_size = cv2.getTextSize(line, cv2.FONT_HERSHEY_SIMPLEX, 
+                                       ClientConfig.FONT_SCALE_DETAIL, 1)[0]
+            max_width = max(max_width, text_size[0])
+        
+        # Sfondo
+        cv2.rectangle(frame, 
+                     (text_x - 5, text_y - total_height),
+                     (text_x + max_width + 10, text_y + 5),
+                     (0, 0, 0, 200), -1)
+        
+        # Disegna testo
+        for i, line in enumerate(info_lines):
+            y = text_y - total_height + 20 + i * 20
+            if i == 0:  # Titolo
+                color = ClientConfig.COLOR_TEXT_DISTANCE
+            else:
+                color = ClientConfig.COLOR_TEXT_POSITION
+            
+            cv2.putText(frame, line, (text_x, y), 
+                       cv2.FONT_HERSHEY_SIMPLEX, ClientConfig.FONT_SCALE_DETAIL,
+                       color, 1)
+    
+    def draw_marker_info_orientation_detail(self, frame, tag_data):
+        """
+        Disegna informazioni dettagliate di orientamento - Vista Orientamento
+        """
+        tag_id = tag_data['id']
+        corners_left = np.array(tag_data['corners_left'], dtype=np.float32)
+        center_left = tag_data['center_left']
+        orientation = tag_data.get('orientation_smooth', tag_data.get('orientation', {}))
+        orientation_raw = tag_data.get('orientation', {})
+        
+        # Disegna riquadro del marcatore
+        corners_int = corners_left.astype(int)
+        cv2.polylines(frame, [corners_int], True, ClientConfig.COLOR_MARKER_BOX, 2)
+        cv2.circle(frame, (int(center_left[0]), int(center_left[1])), 3, ClientConfig.COLOR_MARKER_CENTER, -1)
+        
+        # Informazioni dettagliate orientamento
+        info_lines = [
+            f"TAG ID {tag_id} - ORIENTAMENTO",
+            f"Roll:  {orientation.get('roll', 0):.2f} deg (raw: {orientation_raw.get('roll', 0):.2f} deg)",
+            f"Pitch: {orientation.get('pitch', 0):.2f} deg (raw: {orientation_raw.get('pitch', 0):.2f} deg)",
+            f"Yaw:   {orientation.get('yaw', 0):.2f} deg (raw: {orientation_raw.get('yaw', 0):.2f}deg)",
+            f"Distanza: {tag_data['distance_smooth']:.1f}cm"
+        ]
+        
+        # Posiziona il box informazioni 
+        text_x = max(10, int(center_left[0]) - 200)
+        text_y = max(120, int(center_left[1]) - 50)
+        
+        # Calcola dimensioni box
+        max_width = 0
+        total_height = len(info_lines) * 20 + 10
+        
+        for line in info_lines:
+            text_size = cv2.getTextSize(line, cv2.FONT_HERSHEY_SIMPLEX, 
+                                       ClientConfig.FONT_SCALE_DETAIL, 1)[0]
+            max_width = max(max_width, text_size[0])
+        
+        # Sfondo
+        cv2.rectangle(frame, 
+                     (text_x - 5, text_y - total_height),
+                     (text_x + max_width + 10, text_y + 5),
+                     (0, 0, 0, 200), -1)
+        
+        # Disegna testo
+        for i, line in enumerate(info_lines):
+            y = text_y - total_height + 20 + i * 20
+            if i == 0:  # Titolo
+                color = ClientConfig.COLOR_TEXT_DISTANCE
+            else:
+                color = ClientConfig.COLOR_TEXT_ORIENTATION
+            
+            cv2.putText(frame, line, (text_x, y), 
+                       cv2.FONT_HERSHEY_SIMPLEX, ClientConfig.FONT_SCALE_DETAIL,
+                       color, 1)
+    
+    def draw_marker_info(self, frame, tag_data):
+        """
+        Disegna informazioni del marcatore in base alla modalità di visualizzazione
+        """
+        if self.view_mode == 1:
+            self.draw_marker_info_standard(frame, tag_data)
+        elif self.view_mode == 2:
+            self.draw_marker_info_position_detail(frame, tag_data)
+        elif self.view_mode == 3:
+            self.draw_marker_info_orientation_detail(frame, tag_data)
     
     def draw_overlay_info(self, frame):
         """
@@ -247,14 +397,17 @@ class AprilTagClient:
         with self.data_lock:
             tags_count = len(self.detection_data.get('tags', {}))
             frame_count = self.detection_data.get('frame_count', 0)
-            
+        
+        view_names = {1: "Standard", 2: "Posizione 3D", 3: "Orientamento"}
+        
         info_lines.append(f"Tags rilevati: {tags_count}")
         info_lines.append(f"FPS: {self.stats['fps']:.1f}")
+        info_lines.append(f"Vista: {view_names.get(self.view_mode, 'Sconosciuta')}")
         info_lines.append(f"Frames: {self.stats['frames_received']}")
         
         # Disegna sfondo per info generali
         info_height = len(info_lines) * 25 + 10
-        cv2.rectangle(frame, (10, 10), (250, info_height), (0, 0, 0, 128), -1)
+        cv2.rectangle(frame, (10, 10), (280, info_height), (0, 0, 0, 128), -1)
         
         for i, line in enumerate(info_lines):
             y = 30 + i * 25
@@ -264,17 +417,17 @@ class AprilTagClient:
         # Informazioni di calibrazione in basso a sinistra
         with self.data_lock:
             calib_info = self.detection_data.get('calibration_info', {})
-            
+        
         if calib_info:
             calib_lines = [
-                f"RMS: {calib_info.get('rms_error', 0):.2f}px",
-                f"Baseline: {calib_info.get('baseline', 0):.1f}cm"
+                f"RMS: {calib_info.get('rms_error', 0):.3f}px",
+                f"Baseline: {calib_info.get('baseline', 0):.2f}cm"
             ]
             
             calib_height = len(calib_lines) * 20 + 10
             calib_y_start = height - calib_height - 10
             
-            cv2.rectangle(frame, (10, calib_y_start), (200, height - 10), (0, 0, 0, 128), -1)
+            cv2.rectangle(frame, (10, calib_y_start), (220, height - 10), (0, 0, 0, 128), -1)
             
             for i, line in enumerate(calib_lines):
                 y = calib_y_start + 20 + i * 20
@@ -282,7 +435,7 @@ class AprilTagClient:
                            ClientConfig.FONT_SCALE_DEBUG, ClientConfig.COLOR_TEXT_INFO, 1)
         
         # Comandi in basso a destra
-        commands = ["Q:Esci", "R:Reset", "S:Screenshot", "D:Debug", "F:Fullscreen"]
+        commands = ["Q:Esci", "R:Reset", "S:Screen", "1/2/3:Viste", "P:Pos", "O:Ori", "D:Debug", "F:Full"]
         command_text = " | ".join(commands)
         
         text_size = cv2.getTextSize(command_text, cv2.FONT_HERSHEY_SIMPLEX,
@@ -374,8 +527,8 @@ class AprilTagClient:
         video_thread = threading.Thread(target=self.video_update_thread, daemon=True)
         video_thread.start()
         
-        # Aspetta il primo frame per determinare le dimensioni della finestra
-        self.logger.info("Attendendo primo frame per determinare dimensioni finestra...")
+        # Aspetta il primo frame
+        self.logger.info("Attendendo primo frame...")
         while self.is_running and self.current_frame is None:
             time.sleep(0.1)
         
@@ -383,26 +536,21 @@ class AprilTagClient:
             self.logger.error("Nessun frame ricevuto")
             return False
         
-        # Crea finestra con dimensioni fisse basate sul frame ricevuto
+        # Crea finestra
         frame_height, frame_width = self.current_frame.shape[:2]
         cv2.namedWindow(ClientConfig.WINDOW_NAME, cv2.WINDOW_NORMAL)
         cv2.resizeWindow(ClientConfig.WINDOW_NAME, frame_width, frame_height)
-        cv2.setWindowProperty(ClientConfig.WINDOW_NAME, cv2.WND_PROP_ASPECT_RATIO, cv2.WINDOW_FREERATIO)
         
-        # Rende la finestra non ridimensionabile
-        cv2.setWindowProperty(ClientConfig.WINDOW_NAME, cv2.WND_PROP_AUTOSIZE, cv2.WINDOW_AUTOSIZE)
-        
-        self.logger.info(f"Finestra creata con dimensioni: {frame_width}x{frame_height}")
-        
-        self.logger.info("Client avviato - premere Q per uscire")
+        self.logger.info("Client avviato - comandi disponibili:")
+        self.logger.info("  Q: Esci, R: Reset filtri, S: Screenshot")
+        self.logger.info("  1/2/3: Cambia vista, P: Toggle posizione, O: Toggle orientamento")
+        self.logger.info("  D: Toggle debug, F: Toggle fullscreen")
         
         try:
             while self.is_running:
-                # Elabora frame corrente
                 display_frame = self.process_frame()
                 
                 if display_frame is not None:
-                    # Mostra frame
                     if self.fullscreen:
                         cv2.setWindowProperty(ClientConfig.WINDOW_NAME, cv2.WND_PROP_FULLSCREEN, cv2.WINDOW_FULLSCREEN)
                     else:
@@ -420,14 +568,26 @@ class AprilTagClient:
                         self.logger.info("Filtri resettati")
                 elif key == ord('s'):  # Screenshot
                     screenshot_file = self.save_screenshot()
-                    if screenshot_file:
-                        self.logger.info(f"Screenshot: {screenshot_file}")
                 elif key == ord('d'):  # Toggle debug
                     self.show_debug = not self.show_debug
                     self.logger.info(f"Debug info: {'ON' if self.show_debug else 'OFF'}")
                 elif key == ord('f'):  # Toggle fullscreen
                     self.fullscreen = not self.fullscreen
-                    self.logger.info(f"Fullscreen: {'ON' if self.fullscreen else 'OFF'}")
+                elif key == ord('p'):  # Toggle posizione 3D
+                    self.show_position_3d = not self.show_position_3d
+                    self.logger.info(f"Posizione 3D: {'ON' if self.show_position_3d else 'OFF'}")
+                elif key == ord('o'):  # Toggle orientamento
+                    self.show_orientation = not self.show_orientation
+                    self.logger.info(f"Orientamento: {'ON' if self.show_orientation else 'OFF'}")
+                elif key == ord('1'):  # Vista standard
+                    self.view_mode = 1
+                    self.logger.info("Vista: Standard")
+                elif key == ord('2'):  # Vista posizione dettagliata
+                    self.view_mode = 2
+                    self.logger.info("Vista: Posizione 3D dettagliata")
+                elif key == ord('3'):  # Vista orientamento dettagliato
+                    self.view_mode = 3
+                    self.logger.info("Vista: Orientamento dettagliato")
                 
                 time.sleep(0.01)
         
@@ -464,6 +624,11 @@ def main():
     print("  S: Screenshot")
     print("  D: Toggle informazioni debug")
     print("  F: Toggle fullscreen")
+    print("  P: Toggle visualizzazione posizione 3D")
+    print("  O: Toggle visualizzazione orientamento")
+    print("  1: Vista standard")
+    print("  2: Vista dettagliata posizione 3D")
+    print("  3: Vista dettagliata orientamento")
     print()
     
     success = client.run()

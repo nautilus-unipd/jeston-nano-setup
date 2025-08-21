@@ -8,3 +8,6 @@ ls
 python3 webServerArUcoMarker.py 
 python3 webServerArUcoMarker.py 
 exit
+ls -l
+python3 webServerArUcoMarker.py 
+exit
