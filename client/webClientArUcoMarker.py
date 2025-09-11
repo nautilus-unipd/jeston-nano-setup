@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """
 Client per visualizzazione Web Service April Tag Distance Detection
-Versione: Client 1.1 - Enhanced con Posizione 3D e Orientamento
+Versione: Client 1.2 - Extended with Right Camera Data Display
 
 Requisiti:
 pip install opencv-python numpy requests
@@ -31,35 +31,40 @@ import time
 import threading
 from datetime import datetime
 import logging
+from config_loader import ConfigLoader
 
 # =============================================================================
 # CONFIGURAZIONE
 # =============================================================================
 
-class ClientConfig:
-    DEFAULT_SERVER_IP = "192.168.55.1"
-    DEFAULT_SERVER_PORT = 10000
+class ClientConfig(ConfigLoader):
+    """Configurazione per il client di visualizzazione"""
     
-    # Parametri visualizzazione
-    WINDOW_NAME = "April Tag Distance Detection - Client"
-    UPDATE_INTERVAL = 0.033  # ~30 FPS
-    
-    # Colori per visualizzazione (BGR)
-    COLOR_MARKER_BOX = (0, 255, 0)      # Verde per il riquadro
-    COLOR_MARKER_CENTER = (0, 0, 255)   # Rosso per il centro
-    COLOR_TEXT_DISTANCE = (0, 255, 255) # Giallo per la distanza
-    COLOR_TEXT_INFO = (255, 255, 255)   # Bianco per info generali
-    COLOR_TEXT_DEBUG = (128, 128, 255)  # Azzurro per debug
-    COLOR_TEXT_POSITION = (255, 128, 0) # Arancione per posizione 3D
-    COLOR_TEXT_ORIENTATION = (128, 255, 128) # Verde chiaro per orientamento
-    COLOR_SEPARATOR = (255, 255, 255)   # Bianco per separatore
-    
-    # Parametri testo
-    FONT_SCALE_DISTANCE = 0.8
-    FONT_SCALE_INFO = 0.6
-    FONT_SCALE_DEBUG = 0.5
-    FONT_SCALE_DETAIL = 0.4
-    FONT_THICKNESS = 2
+    def __init__(self):
+        # Parametri di rete
+        self.DEFAULT_SERVER_IP = self.get_nested_value("network", "default_server_ip")
+        self.DEFAULT_SERVER_PORT = self.get_nested_value("network", "default_server_port")
+        
+        # Parametri visualizzazione
+        self.WINDOW_NAME = self.get_nested_value("client_display", "window_name")
+        self.UPDATE_INTERVAL = self.get_nested_value("client_display", "update_interval")
+        
+        # Colori per visualizzazione (convertiti in tuple BGR)
+        self.COLOR_MARKER_BOX = tuple(self.get_nested_value("client_display", "colors", "marker_box"))
+        self.COLOR_MARKER_CENTER = tuple(self.get_nested_value("client_display", "colors", "marker_center"))
+        self.COLOR_TEXT_DISTANCE = tuple(self.get_nested_value("client_display", "colors", "text_distance"))
+        self.COLOR_TEXT_INFO = tuple(self.get_nested_value("client_display", "colors", "text_info"))
+        self.COLOR_TEXT_DEBUG = tuple(self.get_nested_value("client_display", "colors", "text_debug"))
+        self.COLOR_TEXT_POSITION = tuple(self.get_nested_value("client_display", "colors", "text_position"))
+        self.COLOR_TEXT_ORIENTATION = tuple(self.get_nested_value("client_display", "colors", "text_orientation"))
+        self.COLOR_SEPARATOR = tuple(self.get_nested_value("client_display", "colors", "separator"))
+        
+        # Parametri testo
+        self.FONT_SCALE_DISTANCE = self.get_nested_value("client_display", "fonts", "scale_distance")
+        self.FONT_SCALE_INFO = self.get_nested_value("client_display", "fonts", "scale_info")
+        self.FONT_SCALE_DEBUG = self.get_nested_value("client_display", "fonts", "scale_debug")
+        self.FONT_SCALE_DETAIL = self.get_nested_value("client_display", "fonts", "scale_detail")
+        self.FONT_THICKNESS = self.get_nested_value("client_display", "fonts", "thickness")
 
 # =============================================================================
 # CLIENT VISUALIZZATORE
@@ -70,6 +75,7 @@ class AprilTagClient:
         self.server_ip = server_ip
         self.server_port = server_port
         self.base_url = f"http://{server_ip}:{server_port}"
+        self.config = ClientConfig()
         
         # Variabili per i dati
         self.current_frame = None
@@ -195,27 +201,39 @@ class AprilTagClient:
             self.logger.error(f"Errore reset filtri: {e}")
         return False
     
-    def draw_marker_info_standard(self, frame, tag_data):
+    def draw_marker_info_standard(self, frame, tag_data, is_right_frame=False):
         """
         Disegna informazioni del marcatore sul frame - Vista Standard
         """
         tag_id = tag_data['id']
         distance = tag_data['distance_smooth']
-        corners_left = np.array(tag_data['corners_left'], dtype=np.float32)
-        center_left = tag_data['center_left']
-        position_3d = tag_data.get('position_3d_smooth', tag_data.get('position_3d', {}))
-        orientation = tag_data.get('orientation_smooth', tag_data.get('orientation', {}))
+        
+        # Seleziona i dati della camera appropriata
+        if is_right_frame:
+            corners = np.array(tag_data['corners_right'], dtype=np.float32)
+            center = tag_data['center_right']
+            position_3d = tag_data.get('right_camera', {}).get('position_3d_smooth', {})
+            orientation = tag_data.get('right_camera', {}).get('orientation_smooth', {})
+            camera_label = "R"
+        else:
+            corners = np.array(tag_data['corners_left'], dtype=np.float32)
+            center = tag_data['center_left']
+            position_3d = tag_data.get('left_camera', {}).get('position_3d_smooth', 
+                                     tag_data.get('position_3d_smooth', tag_data.get('position_3d', {})))
+            orientation = tag_data.get('left_camera', {}).get('orientation_smooth',
+                                     tag_data.get('orientation_smooth', tag_data.get('orientation', {})))
+            camera_label = "L"
         
         # Disegna riquadro del marcatore
-        corners_int = corners_left.astype(int)
-        cv2.polylines(frame, [corners_int], True, ClientConfig.COLOR_MARKER_BOX, 3)
+        corners_int = corners.astype(int)
+        cv2.polylines(frame, [corners_int], True, self.config.COLOR_MARKER_BOX, 3)
         
         # Disegna centro
-        center_int = (int(center_left[0]), int(center_left[1]))
-        cv2.circle(frame, center_int, 5, ClientConfig.COLOR_MARKER_CENTER, -1)
+        center_int = (int(center[0]), int(center[1]))
+        cv2.circle(frame, center_int, 5, self.config.COLOR_MARKER_CENTER, -1)
         
         # Informazioni da visualizzare
-        info_lines = [f"ID {tag_id}: {distance:.1f}cm"]
+        info_lines = [f"ID {tag_id} ({camera_label}): {distance:.1f}cm"]
         
         if self.show_position_3d and position_3d:
             info_lines.append(f"XYZ: ({position_3d.get('x', 0):.1f}cm, {position_3d.get('y', 0):.1f}cm, {position_3d.get('z', 0):.1f}cm)")
@@ -230,7 +248,7 @@ class AprilTagClient:
         
         for line in info_lines:
             text_size = cv2.getTextSize(line, cv2.FONT_HERSHEY_SIMPLEX, 
-                                       ClientConfig.FONT_SCALE_INFO, 1)[0]
+                                       self.config.FONT_SCALE_INFO, 1)[0]
             max_width = max(max_width, text_size[0])
             line_heights.append(text_size[1])
             total_height += text_size[1] + 5
@@ -250,38 +268,50 @@ class AprilTagClient:
         
         for i, line in enumerate(info_lines):
             if i == 0:  # Distanza
-                color = ClientConfig.COLOR_TEXT_DISTANCE
+                color = self.config.COLOR_TEXT_DISTANCE
             elif "XYZ" in line:  # Posizione 3D
-                color = ClientConfig.COLOR_TEXT_POSITION
+                color = self.config.COLOR_TEXT_POSITION
             elif "RPY" in line:  # Orientamento
-                color = ClientConfig.COLOR_TEXT_ORIENTATION
+                color = self.config.COLOR_TEXT_ORIENTATION
             else:
-                color = ClientConfig.COLOR_TEXT_INFO
+                color = self.config.COLOR_TEXT_INFO
             
             cv2.putText(frame, line, (text_x, current_y), 
-                       cv2.FONT_HERSHEY_SIMPLEX, ClientConfig.FONT_SCALE_INFO,
+                       cv2.FONT_HERSHEY_SIMPLEX, self.config.FONT_SCALE_INFO,
                        color, 1)
             
             current_y += line_heights[i] + 5
     
-    def draw_marker_info_position_detail(self, frame, tag_data):
+    def draw_marker_info_position_detail(self, frame, tag_data, is_right_frame=False):
         """
         Disegna informazioni dettagliate di posizione - Vista Posizione
         """
         tag_id = tag_data['id']
-        corners_left = np.array(tag_data['corners_left'], dtype=np.float32)
-        center_left = tag_data['center_left']
-        position_3d = tag_data.get('position_3d_smooth', tag_data.get('position_3d', {}))
-        position_3d_raw = tag_data.get('position_3d', {})
         
+        # Seleziona i dati della camera appropriata
+        if is_right_frame:
+            corners = np.array(tag_data['corners_right'], dtype=np.float32)
+            center = tag_data['center_right']
+            position_3d = tag_data.get('right_camera', {}).get('position_3d_smooth', {})
+            position_3d_raw = tag_data.get('right_camera', {}).get('position_3d', {})
+            camera_label = "DESTRA"
+        else:
+            corners = np.array(tag_data['corners_left'], dtype=np.float32)
+            center = tag_data['center_left']
+            position_3d = tag_data.get('left_camera', {}).get('position_3d_smooth',
+                                     tag_data.get('position_3d_smooth', tag_data.get('position_3d', {})))
+            position_3d_raw = tag_data.get('left_camera', {}).get('position_3d',
+                                         tag_data.get('position_3d', {}))
+            camera_label = "SINISTRA"
+
         # Disegna riquadro del marcatore
-        corners_int = corners_left.astype(int)
-        cv2.polylines(frame, [corners_int], True, ClientConfig.COLOR_MARKER_BOX, 2)
-        cv2.circle(frame, (int(center_left[0]), int(center_left[1])), 3, ClientConfig.COLOR_MARKER_CENTER, -1)
+        corners_int = corners.astype(int)
+        cv2.polylines(frame, [corners_int], True, self.config.COLOR_MARKER_BOX, 2)
+        cv2.circle(frame, (int(center[0]), int(center[1])), 3, self.config.COLOR_MARKER_CENTER, -1)
         
         # Informazioni dettagliate posizione
         info_lines = [
-            f"TAG ID {tag_id} - POSIZIONE 3D",
+            f"TAG ID {tag_id} - POSIZIONE 3D ({camera_label})",
             f"X: {position_3d.get('x', 0):.2f}cm (raw: {position_3d_raw.get('x', 0):.2f})",
             f"Y: {position_3d.get('y', 0):.2f}cm (raw: {position_3d_raw.get('y', 0):.2f})",
             f"Z: {position_3d.get('z', 0):.2f}cm (raw: {position_3d_raw.get('z', 0):.2f})",
@@ -289,8 +319,8 @@ class AprilTagClient:
         ]
         
         # Posiziona il box informazioni in alto a sinistra del marcatore
-        text_x = max(10, int(center_left[0]) - 200)
-        text_y = max(120, int(center_left[1]) - 50)
+        text_x = max(10, int(center[0]) - 200)
+        text_y = max(120, int(center[1]) - 50)
         
         # Calcola dimensioni box
         max_width = 0
@@ -298,7 +328,7 @@ class AprilTagClient:
         
         for line in info_lines:
             text_size = cv2.getTextSize(line, cv2.FONT_HERSHEY_SIMPLEX, 
-                                       ClientConfig.FONT_SCALE_DETAIL, 1)[0]
+                                       self.config.FONT_SCALE_DETAIL, 1)[0]
             max_width = max(max_width, text_size[0])
         
         # Sfondo
@@ -311,32 +341,44 @@ class AprilTagClient:
         for i, line in enumerate(info_lines):
             y = text_y - total_height + 20 + i * 20
             if i == 0:  # Titolo
-                color = ClientConfig.COLOR_TEXT_DISTANCE
+                color = self.config.COLOR_TEXT_DISTANCE
             else:
-                color = ClientConfig.COLOR_TEXT_POSITION
+                color = self.config.COLOR_TEXT_POSITION
             
             cv2.putText(frame, line, (text_x, y), 
-                       cv2.FONT_HERSHEY_SIMPLEX, ClientConfig.FONT_SCALE_DETAIL,
+                       cv2.FONT_HERSHEY_SIMPLEX, self.config.FONT_SCALE_DETAIL,
                        color, 1)
     
-    def draw_marker_info_orientation_detail(self, frame, tag_data):
+    def draw_marker_info_orientation_detail(self, frame, tag_data, is_right_frame=False):
         """
         Disegna informazioni dettagliate di orientamento - Vista Orientamento
         """
         tag_id = tag_data['id']
-        corners_left = np.array(tag_data['corners_left'], dtype=np.float32)
-        center_left = tag_data['center_left']
-        orientation = tag_data.get('orientation_smooth', tag_data.get('orientation', {}))
-        orientation_raw = tag_data.get('orientation', {})
+        
+        # Seleziona i dati della camera appropriata
+        if is_right_frame:
+            corners = np.array(tag_data['corners_right'], dtype=np.float32)
+            center = tag_data['center_right']
+            orientation = tag_data.get('right_camera', {}).get('orientation_smooth', {})
+            orientation_raw = tag_data.get('right_camera', {}).get('orientation', {})
+            camera_label = "DESTRA"
+        else:
+            corners = np.array(tag_data['corners_left'], dtype=np.float32)
+            center = tag_data['center_left']
+            orientation = tag_data.get('left_camera', {}).get('orientation_smooth',
+                                     tag_data.get('orientation_smooth', tag_data.get('orientation', {})))
+            orientation_raw = tag_data.get('left_camera', {}).get('orientation',
+                                         tag_data.get('orientation', {}))
+            camera_label = "SINISTRA"
         
         # Disegna riquadro del marcatore
-        corners_int = corners_left.astype(int)
-        cv2.polylines(frame, [corners_int], True, ClientConfig.COLOR_MARKER_BOX, 2)
-        cv2.circle(frame, (int(center_left[0]), int(center_left[1])), 3, ClientConfig.COLOR_MARKER_CENTER, -1)
+        corners_int = corners.astype(int)
+        cv2.polylines(frame, [corners_int], True, self.config.COLOR_MARKER_BOX, 2)
+        cv2.circle(frame, (int(center[0]), int(center[1])), 3, self.config.COLOR_MARKER_CENTER, -1)
         
         # Informazioni dettagliate orientamento
         info_lines = [
-            f"TAG ID {tag_id} - ORIENTAMENTO",
+            f"TAG ID {tag_id} - ORIENTAMENTO ({camera_label})",
             f"Roll:  {orientation.get('roll', 0):.2f} deg (raw: {orientation_raw.get('roll', 0):.2f} deg)",
             f"Pitch: {orientation.get('pitch', 0):.2f} deg (raw: {orientation_raw.get('pitch', 0):.2f} deg)",
             f"Yaw:   {orientation.get('yaw', 0):.2f} deg (raw: {orientation_raw.get('yaw', 0):.2f}deg)",
@@ -344,8 +386,8 @@ class AprilTagClient:
         ]
         
         # Posiziona il box informazioni 
-        text_x = max(10, int(center_left[0]) - 200)
-        text_y = max(120, int(center_left[1]) - 50)
+        text_x = max(10, int(center[0]) - 200)
+        text_y = max(120, int(center[1]) - 50)
         
         # Calcola dimensioni box
         max_width = 0
@@ -353,7 +395,7 @@ class AprilTagClient:
         
         for line in info_lines:
             text_size = cv2.getTextSize(line, cv2.FONT_HERSHEY_SIMPLEX, 
-                                       ClientConfig.FONT_SCALE_DETAIL, 1)[0]
+                                       self.config.FONT_SCALE_DETAIL, 1)[0]
             max_width = max(max_width, text_size[0])
         
         # Sfondo
@@ -366,24 +408,24 @@ class AprilTagClient:
         for i, line in enumerate(info_lines):
             y = text_y - total_height + 20 + i * 20
             if i == 0:  # Titolo
-                color = ClientConfig.COLOR_TEXT_DISTANCE
+                color = self.config.COLOR_TEXT_DISTANCE
             else:
-                color = ClientConfig.COLOR_TEXT_ORIENTATION
+                color = self.config.COLOR_TEXT_ORIENTATION
             
             cv2.putText(frame, line, (text_x, y), 
-                       cv2.FONT_HERSHEY_SIMPLEX, ClientConfig.FONT_SCALE_DETAIL,
+                       cv2.FONT_HERSHEY_SIMPLEX, self.config.FONT_SCALE_DETAIL,
                        color, 1)
     
-    def draw_marker_info(self, frame, tag_data):
+    def draw_marker_info(self, frame, tag_data, is_right_frame=False):
         """
         Disegna informazioni del marcatore in base alla modalità di visualizzazione
         """
         if self.view_mode == 1:
-            self.draw_marker_info_standard(frame, tag_data)
+            self.draw_marker_info_standard(frame, tag_data, is_right_frame)
         elif self.view_mode == 2:
-            self.draw_marker_info_position_detail(frame, tag_data)
+            self.draw_marker_info_position_detail(frame, tag_data, is_right_frame)
         elif self.view_mode == 3:
-            self.draw_marker_info_orientation_detail(frame, tag_data)
+            self.draw_marker_info_orientation_detail(frame, tag_data, is_right_frame)
     
     def draw_overlay_info(self, frame):
         """
@@ -412,7 +454,7 @@ class AprilTagClient:
         for i, line in enumerate(info_lines):
             y = 30 + i * 25
             cv2.putText(frame, line, (15, y), cv2.FONT_HERSHEY_SIMPLEX,
-                       ClientConfig.FONT_SCALE_INFO, ClientConfig.COLOR_TEXT_INFO, 1)
+                       self.config.FONT_SCALE_INFO, self.config.COLOR_TEXT_INFO, 1)
         
         # Informazioni di calibrazione in basso a sinistra
         with self.data_lock:
@@ -432,32 +474,32 @@ class AprilTagClient:
             for i, line in enumerate(calib_lines):
                 y = calib_y_start + 20 + i * 20
                 cv2.putText(frame, line, (15, y), cv2.FONT_HERSHEY_SIMPLEX,
-                           ClientConfig.FONT_SCALE_DEBUG, ClientConfig.COLOR_TEXT_INFO, 1)
+                           self.config.FONT_SCALE_DEBUG, self.config.COLOR_TEXT_INFO, 1)
         
         # Comandi in basso a destra
         commands = ["Q:Esci", "R:Reset", "S:Screen", "1/2/3:Viste", "P:Pos", "O:Ori", "D:Debug", "F:Full"]
         command_text = " | ".join(commands)
         
         text_size = cv2.getTextSize(command_text, cv2.FONT_HERSHEY_SIMPLEX,
-                                   ClientConfig.FONT_SCALE_DEBUG, 1)[0]
+                                   self.config.FONT_SCALE_DEBUG, 1)[0]
         
         cmd_x = width - text_size[0] - 15
         cmd_y = height - 15
         
         cv2.rectangle(frame, (cmd_x - 5, cmd_y - 20), (width - 10, height - 5), (0, 0, 0, 128), -1)
         cv2.putText(frame, command_text, (cmd_x, cmd_y - 5), cv2.FONT_HERSHEY_SIMPLEX,
-                   ClientConfig.FONT_SCALE_DEBUG, ClientConfig.COLOR_TEXT_INFO, 1)
+                   self.config.FONT_SCALE_DEBUG, self.config.COLOR_TEXT_INFO, 1)
         
         # Separatore stereo (se il frame è stereo)
         if width > height:  # Probabilmente stereo side-by-side
             separator_x = width // 2
-            cv2.line(frame, (separator_x, 0), (separator_x, height), ClientConfig.COLOR_SEPARATOR, 2)
+            cv2.line(frame, (separator_x, 0), (separator_x, height), self.config.COLOR_SEPARATOR, 2)
             
             # Etichette sinistra/destra
             cv2.putText(frame, "SINISTRA", (50, height - 50), cv2.FONT_HERSHEY_SIMPLEX,
-                       0.8, ClientConfig.COLOR_SEPARATOR, 2)
+                       0.8, self.config.COLOR_SEPARATOR, 2)
             cv2.putText(frame, "DESTRA", (separator_x + 50, height - 50), cv2.FONT_HERSHEY_SIMPLEX,
-                       0.8, ClientConfig.COLOR_SEPARATOR, 2)
+                       0.8, self.config.COLOR_SEPARATOR, 2)
     
     def process_frame(self):
         """
@@ -470,9 +512,45 @@ class AprilTagClient:
             frame = self.current_frame.copy()
             tags_data = self.detection_data.get('tags', {})
         
-        # Disegna informazioni per ogni tag rilevato
-        for tag_id, tag_data in tags_data.items():
-            self.draw_marker_info(frame, tag_data)
+        height, width = frame.shape[:2]
+        
+        # Determina se è un frame stereo side-by-side
+        is_stereo = width > height
+        
+        if is_stereo:
+            # Frame stereo - separa le due metà
+            separator_x = width // 2
+            
+            # Disegna informazioni per ogni tag rilevato
+            for tag_id, tag_data in tags_data.items():
+                # Solo se il tag ha dati per entrambe le telecamere
+                if 'corners_left' in tag_data and 'corners_right' in tag_data:
+                    # Disegna sulla parte sinistra
+                    self.draw_marker_info(frame, tag_data, is_right_frame=False)
+                    
+                    # Disegna sulla parte destra - aggiusta le coordinate per la parte destra del frame
+                    # Crea una copia dei dati del tag con coordinate aggiustate per la parte destra
+                    right_tag_data = tag_data.copy()
+                    if 'corners_right' in tag_data and 'center_right' in tag_data:
+                        # Le coordinate della camera destra sono già corrette per la loro metà del frame
+                        # Ma dobbiamo aggiustarle per la posizione nella metà destra del frame completo
+                        corners_right_adjusted = np.array(tag_data['corners_right'])
+                        corners_right_adjusted[:, 0] += separator_x  # Sposta X verso destra
+                        
+                        center_right_adjusted = [
+                            tag_data['center_right'][0] + separator_x,
+                            tag_data['center_right'][1]
+                        ]
+                        
+                        # Aggiorna i dati per il disegno sulla parte destra
+                        right_tag_data['corners_right'] = corners_right_adjusted.tolist()
+                        right_tag_data['center_right'] = center_right_adjusted
+                        
+                        self.draw_marker_info(frame, right_tag_data, is_right_frame=True)
+        else:
+            # Frame singolo - disegna normalmente (solo camera sinistra)
+            for tag_id, tag_data in tags_data.items():
+                self.draw_marker_info(frame, tag_data, is_right_frame=False)
         
         # Disegna overlay con informazioni generali
         self.draw_overlay_info(frame)
@@ -506,7 +584,7 @@ class AprilTagClient:
         """
         while self.is_running:
             self.fetch_video_frame()
-            time.sleep(ClientConfig.UPDATE_INTERVAL)
+            time.sleep(self.config.UPDATE_INTERVAL)
     
     def run(self):
         """
@@ -538,13 +616,14 @@ class AprilTagClient:
         
         # Crea finestra
         frame_height, frame_width = self.current_frame.shape[:2]
-        cv2.namedWindow(ClientConfig.WINDOW_NAME, cv2.WINDOW_NORMAL)
-        cv2.resizeWindow(ClientConfig.WINDOW_NAME, frame_width, frame_height)
+        cv2.namedWindow(self.config.WINDOW_NAME, cv2.WINDOW_NORMAL)
+        cv2.resizeWindow(self.config.WINDOW_NAME, frame_width, frame_height)
         
         self.logger.info("Client avviato - comandi disponibili:")
         self.logger.info("  Q: Esci, R: Reset filtri, S: Screenshot")
         self.logger.info("  1/2/3: Cambia vista, P: Toggle posizione, O: Toggle orientamento")
         self.logger.info("  D: Toggle debug, F: Toggle fullscreen")
+        self.logger.info("  NOVITÀ: Visualizzazione dati camera destra sui frame stereo")
         
         try:
             while self.is_running:
@@ -552,11 +631,11 @@ class AprilTagClient:
                 
                 if display_frame is not None:
                     if self.fullscreen:
-                        cv2.setWindowProperty(ClientConfig.WINDOW_NAME, cv2.WND_PROP_FULLSCREEN, cv2.WINDOW_FULLSCREEN)
+                        cv2.setWindowProperty(self.config.WINDOW_NAME, cv2.WND_PROP_FULLSCREEN, cv2.WINDOW_FULLSCREEN)
                     else:
-                        cv2.setWindowProperty(ClientConfig.WINDOW_NAME, cv2.WND_PROP_FULLSCREEN, cv2.WINDOW_NORMAL)
+                        cv2.setWindowProperty(self.config.WINDOW_NAME, cv2.WND_PROP_FULLSCREEN, cv2.WINDOW_NORMAL)
                     
-                    cv2.imshow(ClientConfig.WINDOW_NAME, display_frame)
+                    cv2.imshow(self.config.WINDOW_NAME, display_frame)
                 
                 # Gestione input
                 key = cv2.waitKey(1) & 0xFF
@@ -607,10 +686,11 @@ class AprilTagClient:
 
 def main():
     parser = argparse.ArgumentParser(description='Client per April Tag Distance Detection Web Service')
-    parser.add_argument('--server', default=ClientConfig.DEFAULT_SERVER_IP,
-                       help=f'Indirizzo IP del server (default: {ClientConfig.DEFAULT_SERVER_IP})')
-    parser.add_argument('--port', type=int, default=ClientConfig.DEFAULT_SERVER_PORT,
-                       help=f'Porta del server (default: {ClientConfig.DEFAULT_SERVER_PORT})')
+    config = ClientConfig()
+    parser.add_argument('--server', default=config.DEFAULT_SERVER_IP,
+                       help=f'Indirizzo IP del server (default: {config.DEFAULT_SERVER_IP})')
+    parser.add_argument('--port', type=int, default=config.DEFAULT_SERVER_PORT,
+                       help=f'Porta del server (default: {config.DEFAULT_SERVER_PORT})')
     
     args = parser.parse_args()
     
@@ -629,7 +709,6 @@ def main():
     print("  1: Vista standard")
     print("  2: Vista dettagliata posizione 3D")
     print("  3: Vista dettagliata orientamento")
-    print()
     
     success = client.run()
     
