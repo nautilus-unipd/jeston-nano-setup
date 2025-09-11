@@ -23,7 +23,7 @@ from datetime import datetime
 import pickle
 import socket
 import subprocess
-from config_loader import ConfigLoader
+from server.config_loader import ConfigLoader
 
 # =============================================================================
 # CONFIGURAZIONE
@@ -549,4 +549,5 @@ if __name__ == "__main__":
         print("\nProgramma interrotto dall'utente")
     except Exception as e:
         logger.log(f"ERRORE CRITICO: {e}")
+
         print(f"Errore critico: {e}")
