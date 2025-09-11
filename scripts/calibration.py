@@ -23,45 +23,49 @@ from datetime import datetime
 import pickle
 import socket
 import subprocess
+from config_loader import ConfigLoader
 
 # =============================================================================
 # CONFIGURAZIONE
 # =============================================================================
 
-class Config:
-    # Stream URL
-    STREAM_URL = "http://10.70.64.50:8081/back/stereo/feed"
+class Config(ConfigLoader):
+    """Configurazione per la calibrazione delle telecamere"""
     
-    # Risoluzione telecamere
-    CAMERA_LEFT_WIDTH = 640
-    CAMERA_LEFT_HEIGHT = 480
-    CAMERA_RIGHT_WIDTH = 640
-    CAMERA_RIGHT_HEIGHT = 480
-    
-    # Parametri scacchiera
-    CHESSBOARD_SIZE = (10, 7)  # Numero di angoli interni (width, height)
-    SQUARE_SIZE = 3.7  # cm - Misurare precisamente!
-    
-    # File di salvataggio
-    CALIBRATION_FILE = "stereo_calibration_data.pkl"
-    LOG_FILE = "calibration_log.txt"
-    
-    # Parametri di qualità
-    MIN_CALIBRATION_IMAGES = 25
-    MAX_REPROJECTION_ERROR = 1.0
-    MIN_DISPARITY = 1.0
-    
-    # Server Jetson
-    DEFAULT_SERVER_IP = "192.168.55.1"
-    DEFAULT_SERVER_PORT = 10000
-    JETSON_PATH = "/home/nautilus/jeston-nano-setup/server/"
+    def __init__(self):
+        # Stream URL
+        self.STREAM_URL = self.get_nested_value("camera", "stream_url")
+        
+        # Risoluzione telecamere
+        self.CAMERA_LEFT_WIDTH = self.get_nested_value("camera", "left", "width")
+        self.CAMERA_LEFT_HEIGHT = self.get_nested_value("camera", "left", "height")
+        self.CAMERA_RIGHT_WIDTH = self.get_nested_value("camera", "right", "width")
+        self.CAMERA_RIGHT_HEIGHT = self.get_nested_value("camera", "right", "height")
+        
+        # Parametri scacchiera
+        self.CHESSBOARD_SIZE = tuple(self.get_nested_value("calibration", "chessboard", "size"))
+        self.SQUARE_SIZE = self.get_nested_value("calibration", "chessboard", "square_size")
+        
+        # File di salvataggio
+        self.CALIBRATION_FILE = self.get_nested_value("calibration", "files", "calibration_file")
+        self.LOG_FILE = self.get_nested_value("calibration", "files", "log_file")
+        
+        # Parametri di qualità
+        self.MIN_CALIBRATION_IMAGES = self.get_nested_value("calibration", "quality", "min_calibration_images")
+        self.MAX_REPROJECTION_ERROR = self.get_nested_value("calibration", "quality", "max_reprojection_error")
+        self.MIN_DISPARITY = self.get_nested_value("calibration", "quality", "min_disparity")
+        
+        # Server Jetson
+        self.DEFAULT_SERVER_IP = self.get_nested_value("network", "default_server_ip")
+        self.DEFAULT_SERVER_PORT = self.get_nested_value("network", "default_server_port")
+        self.JETSON_PATH = self.get_nested_value("jetson", "path")
 
 # =============================================================================
 # LOGGING
 # =============================================================================
 
 class Logger:
-    def __init__(self, filename=Config.LOG_FILE):
+    def __init__(self, filename=Config().LOG_FILE):
         self.filename = filename
     
     def log(self, message):
@@ -78,7 +82,7 @@ logger = Logger()
 # UTILITÀ
 # =============================================================================
 
-def split_stereo_frame(frame, config=Config):
+def split_stereo_frame(frame, config=Config()):
     """Divide il frame stereo in frame sinistro e destro"""
     frame_h, frame_w = frame.shape[:2]
     expected_width = config.CAMERA_LEFT_WIDTH + config.CAMERA_RIGHT_WIDTH
@@ -117,7 +121,7 @@ def validate_chessboard_image(gray_l, gray_r, chessboard_size):
     max_x_l, max_y_l = corners_l_flat.max(axis=0)
     area_l = (max_x_l - min_x_l) * (max_y_l - min_y_l)
     
-    min_area = 5500 * ((Config.CAMERA_LEFT_WIDTH * Config.CAMERA_LEFT_HEIGHT) / (640 * 480))
+    min_area = 5500 * ((Config().CAMERA_LEFT_WIDTH * Config().CAMERA_LEFT_HEIGHT) / (640 * 480))
     
     if area_l < min_area:
         return False, f"Scacchiera troppo piccola"
@@ -137,7 +141,7 @@ def validate_chessboard_image(gray_l, gray_r, chessboard_size):
 # =============================================================================
 
 class StereoCalibrator:
-    def __init__(self, config=Config):
+    def __init__(self, config=Config()):
         self.config = config
         self.logger = logger
         
@@ -410,17 +414,17 @@ class StereoCalibrator:
 # UPLOAD SU JETSON
 # =============================================================================
 
-def upload_calibration_to_jetson(server_ip=Config.DEFAULT_SERVER_IP, jetson_path=Config.JETSON_PATH):
+def upload_calibration_to_jetson(server_ip=Config().DEFAULT_SERVER_IP, jetson_path=Config().JETSON_PATH):
     """Carica il file di calibrazione sulla Jetson Nano via SCP"""
     
-    if not os.path.exists(Config.CALIBRATION_FILE):
-        logger.log(f"ERRORE: File di calibrazione {Config.CALIBRATION_FILE} non trovato")
+    if not os.path.exists(Config().CALIBRATION_FILE):
+        logger.log(f"ERRORE: File di calibrazione {Config().CALIBRATION_FILE} non trovato")
         return False
     
     try:
         # Costruisci comando SCP
-        remote_path = f"nautilus@{server_ip}:{jetson_path}{Config.CALIBRATION_FILE}"
-        cmd = ["scp", Config.CALIBRATION_FILE, remote_path]
+        remote_path = f"nautilus@{server_ip}:{jetson_path}{Config().CALIBRATION_FILE}"
+        cmd = ["scp", Config().CALIBRATION_FILE, remote_path]
         
         logger.log(f"Caricamento su {remote_path}...")
         
@@ -447,6 +451,8 @@ def upload_calibration_to_jetson(server_ip=Config.DEFAULT_SERVER_IP, jetson_path
 
 def print_help():
     """Stampa istruzioni d'uso"""
+
+    config = Config()
     print("\n" + "="*60)
     print("SISTEMA DI CALIBRAZIONE STEREO")
     print("="*60)
@@ -457,12 +463,12 @@ def print_help():
     print("  --help         Mostra questo aiuto")
     print()
     print("CONFIGURAZIONE ATTUALE:")
-    print(f"  Stream URL: {Config.STREAM_URL}")
-    print(f"  Risoluzione L: {Config.CAMERA_LEFT_WIDTH}x{Config.CAMERA_LEFT_HEIGHT}")
-    print(f"  Risoluzione R: {Config.CAMERA_RIGHT_WIDTH}x{Config.CAMERA_RIGHT_HEIGHT}")
-    print(f"  Scacchiera: {Config.CHESSBOARD_SIZE} angoli interni")
-    print(f"  Quadrato: {Config.SQUARE_SIZE}cm")
-    print(f"  Server Jetson: {Config.DEFAULT_SERVER_IP}")
+    print(f"  Stream URL: {config.STREAM_URL}")
+    print(f"  Risoluzione L: {config.CAMERA_LEFT_WIDTH}x{config.CAMERA_LEFT_HEIGHT}")
+    print(f"  Risoluzione R: {config.CAMERA_RIGHT_WIDTH}x{config.CAMERA_RIGHT_HEIGHT}")
+    print(f"  Scacchiera: {config.CHESSBOARD_SIZE} angoli interni")
+    print(f"  Quadrato: {config.SQUARE_SIZE}cm")
+    print(f"  Server Jetson: {config.DEFAULT_SERVER_IP}")
     print()
     print("PROCESSO:")
     print("  1. python stereo_calibrator.py --calibrate")
@@ -492,12 +498,13 @@ def main():
         logger.log("AVVIO CALIBRAZIONE STEREO")
         calibrator = StereoCalibrator()
         
+        config = Config()
         print(f"\nCONFIGURAZIONE:")
-        print(f"Scacchiera: {Config.CHESSBOARD_SIZE} angoli interni")
-        print(f"Quadrato: {Config.SQUARE_SIZE}cm")
-        print(f"Risoluzione L: {Config.CAMERA_LEFT_WIDTH}x{Config.CAMERA_LEFT_HEIGHT}")
-        print(f"Risoluzione R: {Config.CAMERA_RIGHT_WIDTH}x{Config.CAMERA_RIGHT_HEIGHT}")
-        print(f"Stream: {Config.STREAM_URL}")
+        print(f"Scacchiera: {config.CHESSBOARD_SIZE} angoli interni")
+        print(f"Quadrato: {config.SQUARE_SIZE}cm")
+        print(f"Risoluzione L: {config.CAMERA_LEFT_WIDTH}x{config.CAMERA_LEFT_HEIGHT}")
+        print(f"Risoluzione R: {config.CAMERA_RIGHT_WIDTH}x{config.CAMERA_RIGHT_HEIGHT}")
+        print(f"Stream: {config.STREAM_URL}")
         
         response = input("\nConfermi configurazione? (y/n): ")
         if response.lower() != 'y':
@@ -516,8 +523,8 @@ def main():
         logger.log("CARICAMENTO SU JETSON")
         
         print(f"\nCaricamento file su Jetson:")
-        print(f"Server: {Config.DEFAULT_SERVER_IP}")
-        print(f"Percorso: {Config.JETSON_PATH}")
+        print(f"Server: {Config().DEFAULT_SERVER_IP}")
+        print(f"Percorso: {Config().JETSON_PATH}")
         
         response = input("\nConfermi upload? (y/n): ")
         if response.lower() != 'y':
