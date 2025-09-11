@@ -1,0 +1,61 @@
+{
+  "network": {
+    "default_server_ip": "127.0.0.1",
+    "default_server_port": 10000,
+    "web_service_host": "0.0.0.0"
+  },
+  "camera": {
+    "stream_url": "http://10.190.45.50:8081/back/stereo/feed",
+    "left": {
+      "width": 640,
+      "height": 480
+    },
+    "right": {
+      "width": 640,
+      "height": 480
+    }
+  },
+  "calibration": {
+    "chessboard": {
+      "size": [10, 7],
+      "square_size": 3.7
+    },
+    "files": {
+      "calibration_file": "stereo_calibration_data.pkl",
+      "log_file": "calibration_log.txt"
+    },
+    "quality": {
+      "min_calibration_images": 25,
+      "max_reprojection_error": 1.0,
+      "min_disparity": 1.0
+    }
+  },
+  "aruco": {
+    "dict_type": "DICT_7X7_250",
+    "tag_size_real": 5.0
+  },
+  "client_display": {
+    "window_name": "April Tag Distance Detection - Client",
+    "update_interval": 0.033,
+    "colors": {
+      "marker_box": [0, 255, 0],
+      "marker_center": [0, 0, 255],
+      "text_distance": [0, 255, 255],
+      "text_info": [255, 255, 255],
+      "text_debug": [128, 128, 255],
+      "text_position": [255, 128, 0],
+      "text_orientation": [128, 255, 128],
+      "separator": [255, 255, 255]
+    },
+    "fonts": {
+      "scale_distance": 0.8,
+      "scale_info": 0.6,
+      "scale_debug": 0.5,
+      "scale_detail": 0.4,
+      "thickness": 2
+    }
+  },
+  "jetson": {
+    "path": "/home/nautilus/jeston-nano-setup/server/"
+  }
+}

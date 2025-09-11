@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """
 Web Service per Rilevamento Distanza April Tag con Telecamera Stereo
-Versione: Web Service 1.1 - Fixed Z coordinate to match stereo depth
+Versione: Web Service 1.2 - Extended with Right Camera Processing
 
 Requisiti:
 pip install opencv-python numpy
@@ -28,34 +28,39 @@ from http.server import HTTPServer, BaseHTTPRequestHandler
 import socketserver
 from urllib.parse import urlparse, parse_qs
 import logging
+from config_loader import ConfigLoader
 
 # =============================================================================
 # CONFIGURAZIONE GLOBALE
 # =============================================================================
 
-class Config:
-    # Parametri web service
-    WEB_SERVICE_PORT = 10000
-    WEB_SERVICE_HOST = '0.0.0.0'
+class Config(ConfigLoader):
+    """Configurazione per il web server ArUco Marker"""
     
-    # Parametri stream video
-    STREAM_URL = "http://10.70.64.50:8081/back/stereo/feed"
-    
-    # Configurazione risoluzione telecamere
-    CAMERA_LEFT_WIDTH = 640
-    CAMERA_LEFT_HEIGHT = 480
-    CAMERA_RIGHT_WIDTH = 640
-    CAMERA_RIGHT_HEIGHT = 480
-    
-    # Parametri April Tag
-    ARUCO_DICT = aruco.DICT_7X7_250
-    TAG_SIZE_REAL = 5.0  # cm
-    
-    # File di calibrazione
-    CALIBRATION_FILE = "stereo_calibration_data.pkl"
-    
-    # Parametri di qualità
-    MIN_DISPARITY = 1.0  # pixel
+    def __init__(self):
+        # Parametri web service
+        self.WEB_SERVICE_PORT = self.get_nested_value("network", "default_server_port")
+        self.WEB_SERVICE_HOST = self.get_nested_value("network", "web_service_host")
+        
+        # Parametri stream video
+        self.STREAM_URL = self.get_nested_value("camera", "stream_url")
+        
+        # Configurazione risoluzione telecamere
+        self.CAMERA_LEFT_WIDTH = self.get_nested_value("camera", "left", "width")
+        self.CAMERA_LEFT_HEIGHT = self.get_nested_value("camera", "left", "height")
+        self.CAMERA_RIGHT_WIDTH = self.get_nested_value("camera", "right", "width")
+        self.CAMERA_RIGHT_HEIGHT = self.get_nested_value("camera", "right", "height")
+        
+        # Parametri April Tag
+        dict_name = self.get_nested_value("aruco", "dict_type")
+        self.ARUCO_DICT = getattr(aruco, dict_name)
+        self.TAG_SIZE_REAL = self.get_nested_value("aruco", "tag_size_real")
+        
+        # File di calibrazione
+        self.CALIBRATION_FILE = self.get_nested_value("calibration", "files", "calibration_file")
+        
+        # Parametri di qualita
+        self.MIN_DISPARITY = self.get_nested_value("calibration", "quality", "min_disparity")
 
 # =============================================================================
 # LOGGING
@@ -65,10 +70,10 @@ logging.basicConfig(level=logging.INFO, format='[%(asctime)s] %(levelname)s: %(m
 logger = logging.getLogger(__name__)
 
 # =============================================================================
-# UTILITÀ
+# UTILITA
 # =============================================================================
 
-def split_stereo_frame(frame, config=Config):
+def split_stereo_frame(frame, config=Config()):
     """
     Divide il frame stereo in frame sinistro e destro basandosi sulla configurazione
     """
@@ -115,7 +120,7 @@ def rotation_matrix_to_euler_angles(R):
 # =============================================================================
 
 class StereoCalibrator:
-    def __init__(self, config=Config):
+    def __init__(self, config=Config()):
         self.config = config
         
         # Parametri di calibrazione
@@ -183,7 +188,7 @@ class StereoCalibrator:
 # =============================================================================
 
 class AprilTagDistanceDetector:
-    def __init__(self, config=Config):
+    def __init__(self, config=Config()):
         self.config = config
         self.calibrator = StereoCalibrator(config)
         
@@ -210,10 +215,13 @@ class AprilTagDistanceDetector:
                 self.use_new_api = False
                 logger.info("Usando API ArUco legacy (OpenCV molto vecchio)")
         
-        # Filtri per smoothing
+        # Filtri per smoothing - ESTESI PER CAMERA DESTRA
         self.distance_filters = {}
         self.position_filters = {}
         self.orientation_filters = {}
+        # Nuovi filtri per camera destra
+        self.position_filters_right = {}
+        self.orientation_filters_right = {}
         
         # Variabili per il threading
         self.cap = None
@@ -312,7 +320,7 @@ class AprilTagDistanceDetector:
     
     def get_smoothed_values(self, tag_id, distance, position, orientation):
         """
-        Applica filtri passa-basso per smooth delle misurazioni
+        Applica filtri passa-basso per smooth delle misurazioni (camera sinistra)
         """
         # Filtro distanza
         if tag_id not in self.distance_filters:
@@ -354,6 +362,39 @@ class AprilTagDistanceDetector:
             smoothed_orientation[angle] = np.average(self.orientation_filters[tag_id][angle], weights=angle_weights)
         
         return smoothed_distance, smoothed_position, smoothed_orientation
+    
+    def get_smoothed_values_right(self, tag_id, position, orientation):
+        """
+        Applica filtri passa-basso per smooth delle misurazioni (camera destra)
+        """
+        # Filtro posizione camera destra
+        if tag_id not in self.position_filters_right:
+            self.position_filters_right[tag_id] = {'x': [], 'y': [], 'z': []}
+        for axis in ['x', 'y', 'z']:
+            self.position_filters_right[tag_id][axis].append(position[axis])
+            if len(self.position_filters_right[tag_id][axis]) > 5:
+                self.position_filters_right[tag_id][axis].pop(0)
+        
+        # Filtro orientamento camera destra
+        if tag_id not in self.orientation_filters_right:
+            self.orientation_filters_right[tag_id] = {'roll': [], 'pitch': [], 'yaw': []}
+        for angle in ['roll', 'pitch', 'yaw']:
+            self.orientation_filters_right[tag_id][angle].append(orientation[angle])
+            if len(self.orientation_filters_right[tag_id][angle]) > 5:
+                self.orientation_filters_right[tag_id][angle].pop(0)
+        
+        smoothed_position = {}
+        smoothed_orientation = {}
+        
+        for axis in ['x', 'y', 'z']:
+            pos_weights = np.linspace(0.5, 1.0, len(self.position_filters_right[tag_id][axis]))
+            smoothed_position[axis] = np.average(self.position_filters_right[tag_id][axis], weights=pos_weights)
+        
+        for angle in ['roll', 'pitch', 'yaw']:
+            angle_weights = np.linspace(0.5, 1.0, len(self.orientation_filters_right[tag_id][angle]))
+            smoothed_orientation[angle] = np.average(self.orientation_filters_right[tag_id][angle], weights=angle_weights)
+        
+        return smoothed_position, smoothed_orientation
     
     def connect_camera(self):
         """Connessione alla telecamera"""
@@ -465,19 +506,31 @@ class AprilTagDistanceDetector:
                             # Calcola distanza stereo
                             distance_raw = (focal_length * baseline) / disparity
                             
-                            # Calcola pose del marcatore usando la camera sinistra
-                            # PASSA LA DISTANZA STEREO COME PARAMETRO
-                            pose_result = self.estimate_pose_single_marker(
+                            # Calcola pose del marcatore usando la camera SINISTRA
+                            pose_result_left = self.estimate_pose_single_marker(
                                 [corners_l_tag],
                                 self.calibrator.camera_matrix_l,
                                 self.calibrator.dist_coeffs_l,
-                                distance_raw  # Passa la profondità stereo
+                                distance_raw
                             )
                             
-                            if pose_result['success']:
-                                # Applica filtri per smoothing
-                                distance_smooth, position_smooth, orientation_smooth = self.get_smoothed_values(
-                                    tag_id, distance_raw, pose_result['position'], pose_result['orientation']
+                            # Calcola pose del marcatore usando la camera DESTRA
+                            pose_result_right = self.estimate_pose_single_marker(
+                                [corners_r_tag],
+                                self.calibrator.camera_matrix_r,
+                                self.calibrator.dist_coeffs_r,
+                                distance_raw
+                            )
+                            
+                            if pose_result_left['success'] and pose_result_right['success']:
+                                # Applica filtri per smoothing - CAMERA SINISTRA
+                                distance_smooth, position_smooth_left, orientation_smooth_left = self.get_smoothed_values(
+                                    tag_id, distance_raw, pose_result_left['position'], pose_result_left['orientation']
+                                )
+                                
+                                # Applica filtri per smoothing - CAMERA DESTRA
+                                position_smooth_right, orientation_smooth_right = self.get_smoothed_values_right(
+                                    tag_id, pose_result_right['position'], pose_result_right['orientation']
                                 )
                                 
                                 detection_results[int(tag_id)] = {
@@ -489,30 +542,88 @@ class AprilTagDistanceDetector:
                                     'center_right': [float(center_r[0]), float(center_r[1])],
                                     'corners_left': corners_l_tag.tolist(),
                                     'corners_right': corners_r_tag.tolist(),
+                                    
+                                    # DATI CAMERA SINISTRA
+                                    'left_camera': {
+                                        'position_3d': {
+                                            'x': float(pose_result_left['position']['x']),
+                                            'y': float(pose_result_left['position']['y']),
+                                            'z': float(pose_result_left['position']['z'])  # Ora è = distance_raw
+                                        },
+                                        'position_3d_smooth': {
+                                            'x': float(position_smooth_left['x']),
+                                            'y': float(position_smooth_left['y']),
+                                            'z': float(position_smooth_left['z'])  # Ora è = distance_smooth
+                                        },
+                                        'position_3d_original_solvepnp': pose_result_left.get('position_original_solvepnp', {}),
+                                        'orientation': {
+                                            'roll': float(pose_result_left['orientation']['roll']),
+                                            'pitch': float(pose_result_left['orientation']['pitch']),
+                                            'yaw': float(pose_result_left['orientation']['yaw'])
+                                        },
+                                        'orientation_smooth': {
+                                            'roll': float(orientation_smooth_left['roll']),
+                                            'pitch': float(orientation_smooth_left['pitch']),
+                                            'yaw': float(orientation_smooth_left['yaw'])
+                                        },
+                                        'rotation_vector': pose_result_left['rotation_vector'],
+                                        'translation_vector': pose_result_left['translation_vector'],
+                                        'rotation_matrix': pose_result_left['rotation_matrix']
+                                    },
+                                    
+                                    # DATI CAMERA DESTRA
+                                    'right_camera': {
+                                        'position_3d': {
+                                            'x': float(pose_result_right['position']['x']),
+                                            'y': float(pose_result_right['position']['y']),
+                                            'z': float(pose_result_right['position']['z'])  # Ora è = distance_raw
+                                        },
+                                        'position_3d_smooth': {
+                                            'x': float(position_smooth_right['x']),
+                                            'y': float(position_smooth_right['y']),
+                                            'z': float(position_smooth_right['z'])  # Ora è = distance_smooth
+                                        },
+                                        'position_3d_original_solvepnp': pose_result_right.get('position_original_solvepnp', {}),
+                                        'orientation': {
+                                            'roll': float(pose_result_right['orientation']['roll']),
+                                            'pitch': float(pose_result_right['orientation']['pitch']),
+                                            'yaw': float(pose_result_right['orientation']['yaw'])
+                                        },
+                                        'orientation_smooth': {
+                                            'roll': float(orientation_smooth_right['roll']),
+                                            'pitch': float(orientation_smooth_right['pitch']),
+                                            'yaw': float(orientation_smooth_right['yaw'])
+                                        },
+                                        'rotation_vector': pose_result_right['rotation_vector'],
+                                        'translation_vector': pose_result_right['translation_vector'],
+                                        'rotation_matrix': pose_result_right['rotation_matrix']
+                                    },
+                                    
+                                    # BACKWARD COMPATIBILITY - mantieni i vecchi campi per compatibilità
                                     'position_3d': {
-                                        'x': float(pose_result['position']['x']),
-                                        'y': float(pose_result['position']['y']),
-                                        'z': float(pose_result['position']['z'])  # Ora è = distance_raw
+                                        'x': float(pose_result_left['position']['x']),
+                                        'y': float(pose_result_left['position']['y']),
+                                        'z': float(pose_result_left['position']['z'])  # Ora è = distance_raw
                                     },
                                     'position_3d_smooth': {
-                                        'x': float(position_smooth['x']),
-                                        'y': float(position_smooth['y']),
-                                        'z': float(position_smooth['z'])  # Ora è = distance_smooth
+                                        'x': float(position_smooth_left['x']),
+                                        'y': float(position_smooth_left['y']),
+                                        'z': float(position_smooth_left['z'])  # Ora è = distance_smooth
                                     },
-                                    'position_3d_original_solvepnp': pose_result.get('position_original_solvepnp', {}),
+                                    'position_3d_original_solvepnp': pose_result_left.get('position_original_solvepnp', {}),
                                     'orientation': {
-                                        'roll': float(pose_result['orientation']['roll']),
-                                        'pitch': float(pose_result['orientation']['pitch']),
-                                        'yaw': float(pose_result['orientation']['yaw'])
+                                        'roll': float(pose_result_left['orientation']['roll']),
+                                        'pitch': float(pose_result_left['orientation']['pitch']),
+                                        'yaw': float(pose_result_left['orientation']['yaw'])
                                     },
                                     'orientation_smooth': {
-                                        'roll': float(orientation_smooth['roll']),
-                                        'pitch': float(orientation_smooth['pitch']),
-                                        'yaw': float(orientation_smooth['yaw'])
+                                        'roll': float(orientation_smooth_left['roll']),
+                                        'pitch': float(orientation_smooth_left['pitch']),
+                                        'yaw': float(orientation_smooth_left['yaw'])
                                     },
-                                    'rotation_vector': pose_result['rotation_vector'],
-                                    'translation_vector': pose_result['translation_vector'],
-                                    'rotation_matrix': pose_result['rotation_matrix'],
+                                    'rotation_vector': pose_result_left['rotation_vector'],
+                                    'translation_vector': pose_result_left['translation_vector'],
+                                    'rotation_matrix': pose_result_left['rotation_matrix'],
                                     'stereo_depth_confirmation': float(distance_raw),
                                     'timestamp': time.time()
                                 }
@@ -527,18 +638,22 @@ class AprilTagDistanceDetector:
                             'rms_error': float(self.calibrator.calibration_quality.get('stereo_rms', 0)),
                             'baseline': float(self.calibrator.calibration_quality.get('baseline', 0))
                         },
-                        'note': 'Z coordinate now matches stereo depth exactly'
+                        'note': 'Z coordinate now matches stereo depth exactly - Extended with right camera processing'
                     }
                 
-                # Log periodico con conferma della correzione
+                # Log periodico con conferma della correzione - ESTESO PER CAMERA DESTRA
                 if frame_count % 30 == 0 and detection_results:
                     for tag_id, data in detection_results.items():
-                        pos = data['position_3d_smooth']
-                        ori = data['orientation_smooth']
+                        pos_l = data['left_camera']['position_3d_smooth']
+                        ori_l = data['left_camera']['orientation_smooth']
+                        pos_r = data['right_camera']['position_3d_smooth']
+                        ori_r = data['right_camera']['orientation_smooth']
                         distance = data['distance_smooth']
-                        logger.info(f"Tag {tag_id}: Dist={distance:.1f}cm, "
-                                  f"Pos({pos['x']:.1f}, {pos['y']:.1f}, {pos['z']:.1f})cm (Z=depth), "
-                                  f"Ori({ori['roll']:.1f}, {ori['pitch']:.1f}, {ori['yaw']:.1f})°")
+                        logger.info(f"Tag {tag_id}: Dist={distance:.1f}cm")
+                        logger.info(f"  Left  Cam: Pos({pos_l['x']:.1f}, {pos_l['y']:.1f}, {pos_l['z']:.1f})cm, "
+                                  f"Ori({ori_l['roll']:.1f}, {ori_l['pitch']:.1f}, {ori_l['yaw']:.1f})°")
+                        logger.info(f"  Right Cam: Pos({pos_r['x']:.1f}, {pos_r['y']:.1f}, {pos_r['z']:.1f})cm, "
+                                  f"Ori({ori_r['roll']:.1f}, {ori_r['pitch']:.1f}, {ori_r['yaw']:.1f})°")
                 
             except Exception as e:
                 logger.error(f"Errore nel loop di rilevamento: {e}")
@@ -637,17 +752,26 @@ class WebServiceHandler(BaseHTTPRequestHandler):
     def handle_status(self):
         """Handler per lo stato del servizio"""
         try:
+            config = Config()
             status_data = {
                 'service': 'April Tag Distance Detection',
+                'version': '1.2 - Extended with Right Camera Processing',
                 'status': 'running' if detector.is_running else 'stopped',
                 'timestamp': time.time(),
                 'opencv_version': cv2.__version__,
                 'aruco_api': 'new' if detector.use_new_api else 'legacy',
+                'features': [
+                    'Left camera pose estimation',
+                    'Right camera pose estimation',
+                    'Stereo depth correction',
+                    'Position and orientation smoothing for both cameras',
+                    'Backward compatibility with existing API'
+                ],
                 'config': {
-                    'camera_resolution_left': f"{Config.CAMERA_LEFT_WIDTH}x{Config.CAMERA_LEFT_HEIGHT}",
-                    'camera_resolution_right': f"{Config.CAMERA_RIGHT_WIDTH}x{Config.CAMERA_RIGHT_HEIGHT}",
-                    'aruco_dict': str(Config.ARUCO_DICT),
-                    'tag_size': Config.TAG_SIZE_REAL
+                    'camera_resolution_left': f"{config.CAMERA_LEFT_WIDTH}x{config.CAMERA_LEFT_HEIGHT}",
+                    'camera_resolution_right': f"{config.CAMERA_RIGHT_WIDTH}x{config.CAMERA_RIGHT_HEIGHT}",
+                    'aruco_dict': str(config.ARUCO_DICT),
+                    'tag_size': config.TAG_SIZE_REAL
                 }
             }
             
@@ -665,15 +789,25 @@ class WebServiceHandler(BaseHTTPRequestHandler):
             self.send_error(500, 'Internal server error')
     
     def handle_reset_filters(self):
-        """Handler per reset filtri"""
+        """Handler per reset filtri - ESTESO PER CAMERA DESTRA"""
         try:
             detector.distance_filters.clear()
             detector.position_filters.clear()
             detector.orientation_filters.clear()
-            logger.info("Tutti i filtri resettati")
+            # Reset anche filtri camera destra
+            detector.position_filters_right.clear()
+            detector.orientation_filters_right.clear()
+            logger.info("Tutti i filtri resettati (inclusi filtri camera destra)")
             
             response_data = {
                 'status': 'filters_reset',
+                'filters_cleared': [
+                    'distance_filters',
+                    'position_filters (left camera)',
+                    'orientation_filters (left camera)',
+                    'position_filters_right (right camera)',
+                    'orientation_filters_right (right camera)'
+                ],
                 'timestamp': time.time()
             }
             
@@ -722,7 +856,8 @@ class ThreadedHTTPServer(socketserver.ThreadingMixIn, HTTPServer):
 detector = AprilTagDistanceDetector()
 
 def main():
-    logger.info("Avvio Web Service April Tag Distance Detection")
+    logger.info("Avvio Web Service April Tag Distance Detection v1.2")
+    logger.info("Nuove funzionalità: Elaborazione camera destra con pose estimation")
     logger.info(f"OpenCV version: {cv2.__version__}")
     
     # Avvia il sistema di rilevamento
@@ -732,16 +867,17 @@ def main():
     
     try:
         # Configura e avvia il server HTTP
-        server_address = (Config.WEB_SERVICE_HOST, Config.WEB_SERVICE_PORT)
+        config = Config()
+        server_address = (config.WEB_SERVICE_HOST, config.WEB_SERVICE_PORT)
         httpd = ThreadedHTTPServer(server_address, WebServiceHandler)
         
-        logger.info(f"Web service avviato su {Config.WEB_SERVICE_HOST}:{Config.WEB_SERVICE_PORT}")
+        logger.info(f"Web service avviato su {config.WEB_SERVICE_HOST}:{config.WEB_SERVICE_PORT}")
         logger.info("Endpoints disponibili:")
-        logger.info(f"  - Video feed: http://{Config.WEB_SERVICE_HOST}:{Config.WEB_SERVICE_PORT}/video_feed")
-        logger.info(f"  - Detection data: http://{Config.WEB_SERVICE_HOST}:{Config.WEB_SERVICE_PORT}/detection_data")
-        logger.info(f"  - Status: http://{Config.WEB_SERVICE_HOST}:{Config.WEB_SERVICE_PORT}/status")
-        logger.info(f"  - Reset filters (POST): http://{Config.WEB_SERVICE_HOST}:{Config.WEB_SERVICE_PORT}/reset_filters")
-        logger.info(f"  - Shutdown (POST): http://{Config.WEB_SERVICE_HOST}:{Config.WEB_SERVICE_PORT}/shutdown")
+        logger.info(f"  - Video feed: http://{config.WEB_SERVICE_HOST}:{config.WEB_SERVICE_PORT}/video_feed")
+        logger.info(f"  - Detection data: http://{config.WEB_SERVICE_HOST}:{config.WEB_SERVICE_PORT}/detection_data")
+        logger.info(f"  - Status: http://{config.WEB_SERVICE_HOST}:{config.WEB_SERVICE_PORT}/status")
+        logger.info(f"  - Reset filters (POST): http://{config.WEB_SERVICE_HOST}:{config.WEB_SERVICE_PORT}/reset_filters")
+        logger.info(f"  - Shutdown (POST): http://{config.WEB_SERVICE_HOST}:{config.WEB_SERVICE_PORT}/shutdown")
         
         httpd.serve_forever()
                 
