@@ -31,7 +31,7 @@ import time
 import threading
 from datetime import datetime
 import logging
-from config_loader import ConfigLoader
+from server.config_loader import ConfigLoader
 
 # =============================================================================
 # CONFIGURAZIONE
@@ -721,4 +721,5 @@ def main():
     return 0
 
 if __name__ == "__main__":
+
     exit(main())
