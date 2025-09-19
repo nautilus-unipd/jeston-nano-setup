@@ -28,7 +28,7 @@ from http.server import HTTPServer, BaseHTTPRequestHandler
 import socketserver
 from urllib.parse import urlparse, parse_qs
 import logging
-from config_loader import ConfigLoader
+from server.config_loader import ConfigLoader
 
 # =============================================================================
 # CONFIGURAZIONE GLOBALE
@@ -890,4 +890,5 @@ def main():
         logger.info("Web service terminato")
 
 if __name__ == "__main__":
+
     main()
