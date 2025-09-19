@@ -21,7 +21,7 @@
       "square_size": 3.7
     },
     "files": {
-      "calibration_file": "stereo_calibration_data.pkl",
+      "calibration_file": "server/stereo_calibration_data.pkl",
       "log_file": "calibration_log.txt"
     },
     "quality": {
@@ -58,4 +58,5 @@
   "jetson": {
     "path": "/home/nautilus/jeston-nano-setup/server/"
   }
+
 }
