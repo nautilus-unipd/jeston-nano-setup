@@ -126,7 +126,7 @@ Inside, Ubuntu 24.04 and ROS 2 Jazzy are ready.
 
 To start the container with the server, it's enough to clone the repository using `git clone`,
 then run the script `./run_container.sh`, which will take you into the Ubuntu container. 
-Once inside, to launch the server, simply run the command `python3 webServerArUcoMarker.py`.
+Once inside, to launch the server, simply run the command `python3 -m server.webServerArUcoMarker`.
 To stop the server, use `Ctrl+C`
 
 The client (`webClientArUcoMarker.py`) should be used on any device connected to the same network 
