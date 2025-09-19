@@ -3,6 +3,6 @@ sudo docker run -it --privileged\
        	-v /dev:/dev\
        	-v /run/udev:/run/udev\
        	--group-add video\
-	-v ./server:/home/ubuntu\
+	-v ./server:/home/ubuntu/server\
        	ghcr.io/nautilus-unipd/jetson-nano-setup:latest
 
