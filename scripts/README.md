@@ -6,7 +6,7 @@ as the calibration is performed by directly accessing the stereo stream from the
 
 > **NOTE:** Calibration should be repeated periodically, and also whenever the image quality changes (e.g., from 480p to 1080p).
 
-To use the script, run: ```python3 -m scripts.calibration --help``` The two main functions are:
+To use the script in the jeston-nano-setup folder, run: ```python3 -m scripts.calibration --help```. The two main functions are:
 - `python3 -m scripts.calibration --calibrate` Starts the calibration process and saves the data to the .pkl file.
 - `python3 -m scripts.calibration --upload` Uploads the .pkl file directly to the Jetson using SCP.
 
